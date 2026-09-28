@@ -1,0 +1,3 @@
+$f = "$env:TEMP\Setup-NewWorkstation.ps1"
+irm https://raw.githubusercontent.com/matic711/8899/main/Setup-NewWorkstation.ps1 -OutFile $f
+Start-Process powershell -Verb RunAs -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$f`""
