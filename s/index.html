@@ -1,3 +1,11 @@
-$f = "$env:TEMP\Setup-NewWorkstation.ps1"
-irm https://raw.githubusercontent.com/matic711/8899/main/Setup-NewWorkstation.ps1 -OutFile $f
-Start-Process powershell -Verb RunAs -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$f`""
+[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor 3072
+$url = "https://raw.githubusercontent.com/matic711/matic711.github.io/main/Setup-NewWorkstation.ps1"
+$f   = "$env:TEMP\Setup-NewWorkstation.ps1"
+try {
+    Write-Host "Prenasam skripto..." -ForegroundColor Cyan
+    Invoke-RestMethod $url -OutFile $f -ErrorAction Stop
+    Start-Process powershell -Verb RunAs -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$f`"" -ErrorAction Stop
+    Write-Host "Setup zagnan v novem oknu." -ForegroundColor Green
+} catch {
+    Write-Host "Napaka: $($_.Exception.Message)" -ForegroundColor Red
+}
