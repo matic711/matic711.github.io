@@ -1,16 +1,16 @@
 <#
 .SYNOPSIS
-    Setup skripta za novo delovno postajo - v4 (Optimizirana in izboljšana zanesljivost).
+    Setup skripta za novo delovno postajo - v4 (Optimizirana in izboljsana zanesljivost).
 
 .OPIS
     Windows Update motor je prevzet iz Remont-v3 (COM Windows Update Agent),
     ker je zanesljivejsi od PSWindowsUpdate.
 
     Dodane optimizacije:
-      - GUI obvestila (MessageBox) ob napakah ali preprečitvi ciklanja.
-      - Skrajšan timeout za posodobitve (30 min) in avtomatski reset wuauserv storitve ob zataknitvi.
+      - GUI obvestila (MessageBox) ob napakah ali preprecitvi ciklanja.
+      - Skrajsan timeout za posodobitve (30 min) in avtomatski reset wuauserv storitve ob zataknitvi.
       - Rezervni samodejni zagon preko HKLM RunOnce registra.
-      - Onemogočanje Fast Startup (Hitri zagon) za zanesljivo izvajanje ob restartu.
+      - Onemogocanje Fast Startup (Hitri zagon) za zanesljivo izvajanje ob restartu.
 
     Koraki:
       1. Predpriprava (power plan, Fast Startup, servisi, WSUS/GPO, prostor)
@@ -35,7 +35,8 @@ param(
     [switch]$SkipApps,
     [switch]$SkipScan,
     [switch]$Reset,
-    [switch]$KeepLog
+    [switch]$KeepLog,
+    [string]$LauncherPath   # pot do .bat datoteke (poda jo batch del)
 )
 
 $ErrorActionPreference = 'Continue'
@@ -60,11 +61,13 @@ $Cfg = @{
 }
 
 $appList = @(
-    @{ Name = 'Google Chrome';        Id = 'Google.Chrome' },
-    @{ Name = 'Mozilla Firefox';      Id = 'Mozilla.Firefox' },
+    # Msi = rezervni uradni MSI proizvajalca, ce winget pade (npr. hash mismatch 0x8A150011,
+    # ko proizvajalec izda novo verzijo, winget katalog pa se ni posodobljen)
+    @{ Name = 'Google Chrome';        Id = 'Google.Chrome';               Msi = 'https://dl.google.com/dl/chrome/install/googlechromestandaloneenterprise64.msi' },
+    @{ Name = 'Mozilla Firefox';      Id = 'Mozilla.Firefox';             Msi = 'https://download.mozilla.org/?product=firefox-msi-latest-ssl&os=win64&lang=en-US' },
     @{ Name = 'Adobe Acrobat Reader'; Id = 'Adobe.Acrobat.Reader.64-bit' },
     @{ Name = '7-Zip';                Id = '7zip.7zip' },
-    @{ Name = 'Zoom';                 Id = 'Zoom.Zoom' }
+    @{ Name = 'Zoom';                 Id = 'Zoom.Zoom';                   Msi = 'https://zoom.us/client/latest/ZoomInstallerFull.msi?archType=x64' }
 )
 
 $taskName    = 'SetupWorkstation-Resume'
@@ -167,9 +170,10 @@ if (-not (Test-Path -LiteralPath $stateFile) -and $PSCommandPath -and ($PSComman
         Copy-Item -LiteralPath $PSCommandPath -Destination $workingCopy -Force
         $srcDir     = Split-Path -Parent $PSCommandPath
         $scriptName = Split-Path -Leaf $PSCommandPath
-        $siblingBat = Get-ChildItem -Path $srcDir -Filter '*.bat' -ErrorAction SilentlyContinue |
+        $siblingBat = if ($LauncherPath) { $LauncherPath } else {
+            Get-ChildItem -Path $srcDir -Filter '*.bat' -ErrorAction SilentlyContinue |
             Where-Object { (Get-Content -LiteralPath $_.FullName -Raw -ErrorAction SilentlyContinue) -match [regex]::Escape($scriptName) } |
-            Select-Object -First 1 -ExpandProperty FullName
+            Select-Object -First 1 -ExpandProperty FullName }
 
         ([PSCustomObject]@{
             OriginalScriptPath = $PSCommandPath
@@ -497,7 +501,7 @@ function Register-ResumeTask {
         } catch { Write-Log "SYSTEM registracija ni uspela: $($_.Exception.Message)" 'WARN' }
     }
 
-    # 3) Dodatna rezervna pot: HKLM RunOnce register ključ
+    # 3) Dodatna rezervna pot: HKLM RunOnce register kljuc
     try {
         $runOnceCmd = "powershell.exe -NoExit -NoProfile -ExecutionPolicy Bypass -File `"$workingCopy`" -ResumedByTask"
         Set-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce' -Name 'SetupWorkstationResume' -Value $runOnceCmd -Force -ErrorAction SilentlyContinue
@@ -1044,8 +1048,21 @@ if ($SkipApps) {
             try { & $winget @wgArgs; $exitCode = $LASTEXITCODE } catch { Write-Log "winget $($app.Id): $_" 'ERROR'; $exitCode = -1 }
             $ok = $false
             try { & $winget list --id $app.Id -e --accept-source-agreements | Out-Null; $ok = ($LASTEXITCODE -eq 0) } catch { }
+            if (-not $ok -and $app.Msi) {
+                Say ("      {0}: winget ni uspel (exit {1} / 0x{1:X8}) - poskusam uradni MSI..." -f $app.Name, $exitCode) 'Yellow' 'WARN'
+                $msi = Join-Path $env:TEMP ("setup-" + ($app.Id -replace '[^\w\.]','_') + '.msi')
+                try {
+                    Invoke-WebRequest -Uri $app.Msi -OutFile $msi -UseBasicParsing -ErrorAction Stop
+                    $mp = Start-Process msiexec.exe -ArgumentList "/i `"$msi`" /qn /norestart" -Wait -PassThru
+                    $exitCode = $mp.ExitCode
+                    Write-Log "MSI $($app.Id): exit $exitCode"
+                } catch { Write-Log "MSI $($app.Id): $_" 'ERROR'; $exitCode = -1 }
+                Remove-Item -LiteralPath $msi -Force -ErrorAction SilentlyContinue
+                try { & $winget list --id $app.Id -e --accept-source-agreements | Out-Null; $ok = ($LASTEXITCODE -eq 0) } catch { }
+                if (-not $ok -and $exitCode -in @(0, 3010)) { $ok = $true }
+            }
             if ($ok) { Say "      $($app.Name): namescen (exit $exitCode)." 'Green' }
-            else     { Say "      $($app.Name): NI namescen (exit $exitCode)." 'Red' 'WARN'; $anyFailed = $true }
+            else     { Say ("      {0}: NI namescen (exit {1} / 0x{1:X8})." -f $app.Name, $exitCode) 'Red' 'WARN'; $anyFailed = $true }
         }
         if ($anyFailed) { Say "  En ali vec programov se ni namestilo - poskusim ob naslednjem zagonu." 'Yellow' 'WARN' }
         else            { $state.AppsDone = $true }
